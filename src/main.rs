@@ -1,15 +1,15 @@
 use anyhow::{anyhow, Result};
 use fastly::http::{header, Method, StatusCode};
-use fastly::{ConfigStore, ObjectStore, Request, Response};
-use once_cell::sync::Lazy;
+use fastly::secret_store::Secret;
+use fastly::{ObjectStore, Request, Response, SecretStore};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 
+const SECRETS_RES: &str = "secrets";
 const CFG_OBJ_STORE_RES: &str = "short-urls-store-resource";
 const CFG_SHORT_ID_LEN: usize = 8;
-
-static CONFIG_DIC: Lazy<ConfigStore> = Lazy::new(|| ConfigStore::open("config"));
+const URLSHORT_AUTH: &str = "X-URLShort-Auth";
 
 /// Holds ID & URL mapping request: short ID (optional) and URL
 #[derive(Serialize, Deserialize, Debug)]
@@ -32,32 +32,6 @@ fn generate_short_id() -> String {
         .collect()
 }
 
-// Get passcode from request's cookie
-fn get_req_passcode(req: &Request) -> Result<String> {
-    let cookie_val: &str = req
-        .get_header(header::COOKIE)
-        .ok_or_else(|| anyhow!("No cookie found"))?
-        .to_str()?;
-
-    // we split at ";" not "; ", in case the cookie is ending with ";"
-    let passcode = cookie_val
-        .split(';')
-        .map(|kv| {
-            let index = kv
-                .find('=')
-                .ok_or_else(|| anyhow!("Invalid key-value pair"))?;
-            let (key, value) = kv.split_at(index);
-            if key.trim() == "passcode" {
-                Ok(value.trim_start_matches('=').to_string())
-            } else {
-                Err(anyhow!("No passcode found in cookie"))
-            }
-        })
-        .find_map(Result::ok)
-        .ok_or_else(|| anyhow!("No passcode found in cookie"))?;
-    Ok(passcode)
-}
-
 /// Get redirect URL from short ID
 fn get_redirect_url(req: &Request) -> Result<Response> {
     // remove leading "/" in the path
@@ -65,15 +39,6 @@ fn get_redirect_url(req: &Request) -> Result<Response> {
         .get_path()
         .get(1..)
         .ok_or_else(|| anyhow!("mal-formatted URL"))?;
-
-    if short_id == "api" {
-        return Ok(
-            Response::from_status(StatusCode::MOVED_PERMANENTLY).with_header(
-                header::LOCATION,
-                "https://developer.fastly.com/reference/api/",
-            ),
-        );
-    }
 
     if short_id
         .as_bytes()
@@ -97,17 +62,6 @@ fn get_redirect_url(req: &Request) -> Result<Response> {
 
 /// Create short ID of a URL
 fn create_short_id(req: &mut Request) -> Result<Response> {
-    // check passcode, to avoid being easily abused
-    if let Ok(req_passcode) = get_req_passcode(req) {
-        let passcode = CONFIG_DIC
-            .get("passcode")
-            .ok_or_else(|| anyhow!("No passcode in config store"))?;
-
-        if passcode != req_passcode {
-            return Err(anyhow!("passcode not matching"));
-        }
-    }
-
     let r = match req.get_content_type() {
         Some(mime) if fastly::mime::APPLICATION_WWW_FORM_URLENCODED == mime => {
             req.take_body_form::<MyRedirect>()?
@@ -133,18 +87,46 @@ fn create_short_id(req: &mut Request) -> Result<Response> {
         .with_body_json(&CreationResult { short: short_id })?)
 }
 
-fn handle_get(req: &Request) -> Result<Response> {
-    // handle GET
+fn get_secret(name: &str) -> Result<Secret> {
+    let secret_store = SecretStore::open(SECRETS_RES)?;
+
+    let passcode = secret_store
+        .get(name)
+        .ok_or_else(|| anyhow!("No passcode in secret store"))?;
+
+    Ok(passcode)
+}
+
+// handle GET
+fn handle_get(req: &mut Request) -> Result<Response> {
+    // when Auth header received - treat it as a shortening request:
+    // * verify the header
+    // * create the short URL and return the response
+    if let Some(auth_header) = req.get_header_str(URLSHORT_AUTH) {
+        let Some((hdr_vendor, hdr_secret)) = auth_header.split_once(' ') else {
+            return Err(anyhow!("No passcode found in secret store"))
+        };
+
+        let auth_secret = get_secret(hdr_vendor)?;
+
+        if auth_secret.plaintext() != hdr_secret.as_bytes() {
+            return Err(anyhow!("Passcode mismatch"));
+        }
+
+        match create_short_id(req) {
+            Ok(resp) => return Ok(resp),
+            Err(e) => return Err(anyhow!("No passcode found in secret store: {e}")),
+        }
+    }
+
+    // when no Auth header - treat it as a short URL:
+    // * lookup the kv store for the URI
+    // * if a match found - return a stored redirect
+
+    // always respond with 200 OK to `/` request
     if req.get_path() == "/" {
-        Ok(Response::from_status(StatusCode::OK).with_header(
-            header::SET_COOKIE,
-            format!(
-                "passcode={:?}; Secure; HttpOnly",
-                CONFIG_DIC
-                    .get("passcode")
-                    .ok_or_else(|| anyhow!("No passcode in config store"))?
-            ),
-        ))
+        // this helps with service deployment
+        Ok(Response::from_status(StatusCode::OK))
     } else {
         match get_redirect_url(req) {
             Ok(resp) => Ok(resp),
@@ -152,16 +134,6 @@ fn handle_get(req: &Request) -> Result<Response> {
                 Ok(Response::from_status(StatusCode::NOT_FOUND)
                     .with_body_text_plain(&e.to_string()))
             }
-        }
-    }
-}
-
-fn handle_post(req: &mut Request) -> Response {
-    // handle POST
-    match create_short_id(req) {
-        Ok(resp) => resp,
-        Err(e) => {
-            Response::from_status(StatusCode::NOT_ACCEPTABLE).with_body_text_plain(&e.to_string())
         }
     }
 }
@@ -178,8 +150,7 @@ fn handle_options() -> Response {
 #[fastly::main]
 fn main(mut req: Request) -> Result<Response> {
     match *req.get_method() {
-        Method::GET => handle_get(&req),
-        Method::POST => Ok(handle_post(&mut req)),
+        Method::GET => handle_get(&mut req),
         Method::OPTIONS => Ok(handle_options()),
         _ => Ok(Response::from_status(StatusCode::METHOD_NOT_ALLOWED)
             .with_header(header::ALLOW, "GET, POST, OPTIONS")
