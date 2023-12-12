@@ -1,5 +1,5 @@
 [package]
-name = "short_url"
+name = "url_shorten"
 version = "0.1.0"
 edition = "2021"
 publish = false

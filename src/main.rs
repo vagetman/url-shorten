@@ -4,30 +4,17 @@ use fastly::secret_store::Secret;
 use fastly::{ObjectStore, Request, Response, SecretStore};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
-use serde::{Deserialize, Serialize};
 
-const SECRETS_RES: &str = "secrets";
-const CFG_OBJ_STORE_RES: &str = "short-urls-store-resource";
-const CFG_SHORT_ID_LEN: usize = 8;
+const SECRET_STORE_RES: &str = "secret-auth-store";
+const OBJ_STORE_RES: &str = "short-urls-store";
+const SHORT_ID_LEN: usize = 10;
 const URLSHORT_AUTH: &str = "X-URLShort-Auth";
-
-/// Holds ID & URL mapping request: short ID (optional) and URL
-#[derive(Serialize, Deserialize, Debug)]
-struct MyRedirect {
-    short: Option<String>,
-    url: String,
-}
-
-/// Holds result of short ID creation
-#[derive(serde::Serialize)]
-struct CreationResult {
-    short: String,
-}
+const RESPONSE_HOST: &str = "X-Response-Host";
 
 /// Generate a random short ID
 fn generate_short_id() -> String {
     let mut rng = thread_rng();
-    (0..CFG_SHORT_ID_LEN)
+    (0..SHORT_ID_LEN)
         .map(|_| rng.sample(Alphanumeric) as char)
         .collect()
 }
@@ -49,7 +36,7 @@ fn get_redirect_url(req: &Request) -> Result<Response> {
     };
 
     let object_store =
-        ObjectStore::open(CFG_OBJ_STORE_RES)?.ok_or_else(|| anyhow!("object store not exists"))?;
+        ObjectStore::open(OBJ_STORE_RES)?.ok_or_else(|| anyhow!("object store not exists"))?;
 
     let redirect_location = object_store
         .lookup_str(short_id)?
@@ -61,34 +48,28 @@ fn get_redirect_url(req: &Request) -> Result<Response> {
 }
 
 /// Create short ID of a URL
-fn create_short_id(req: &mut Request) -> Result<Response> {
-    let r = match req.get_content_type() {
-        Some(mime) if fastly::mime::APPLICATION_WWW_FORM_URLENCODED == mime => {
-            req.take_body_form::<MyRedirect>()?
-        }
-        _ => req.take_body_json::<MyRedirect>()?,
+fn create_short_id(req: &Request) -> Result<Response> {
+    let short_id = generate_short_id();
+    let Some(redir_domain) = req.get_header_str(RESPONSE_HOST) else {
+        return Err(anyhow!("No response host found in a header"));
     };
-
-    let short_id = r.short.map_or_else(generate_short_id, |short| {
-        if short.is_empty() {
-            generate_short_id()
-        } else {
-            short
-        }
-    });
+    let our_domain = req.get_header_str("host").unwrap();
+    let short_url = format!(r#"{{"short": "https://{our_domain}/{short_id}"}}"#);
+    let redir_url = format!("https://{redir_domain}{}", req.get_path());
 
     let mut object_store =
-        ObjectStore::open(CFG_OBJ_STORE_RES)?.ok_or_else(|| anyhow!("object store not exists"))?;
+        ObjectStore::open(OBJ_STORE_RES)?.ok_or_else(|| anyhow!("object store not exists"))?;
 
-    object_store.insert(&short_id, r.url)?;
+    println!("Redir URL to store: {redir_url}");
 
+    object_store.insert(&short_id, &*redir_url)?;
     Ok(Response::from_status(StatusCode::CREATED)
         .with_header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-        .with_body_json(&CreationResult { short: short_id })?)
+        .with_body_text_plain(&short_url))
 }
 
 fn get_secret(name: &str) -> Result<Secret> {
-    let secret_store = SecretStore::open(SECRETS_RES)?;
+    let secret_store = SecretStore::open(SECRET_STORE_RES)?;
 
     let passcode = secret_store
         .get(name)
@@ -98,13 +79,13 @@ fn get_secret(name: &str) -> Result<Secret> {
 }
 
 // handle GET
-fn handle_get(req: &mut Request) -> Result<Response> {
+fn handle_get(req: &Request) -> Result<Response> {
     // when Auth header received - treat it as a shortening request:
     // * verify the header
     // * create the short URL and return the response
     if let Some(auth_header) = req.get_header_str(URLSHORT_AUTH) {
         let Some((hdr_vendor, hdr_secret)) = auth_header.split_once(' ') else {
-            return Err(anyhow!("No passcode found in secret store"))
+            return Err(anyhow!("No passcode found in auth header"));
         };
 
         let auth_secret = get_secret(hdr_vendor)?;
@@ -113,10 +94,10 @@ fn handle_get(req: &mut Request) -> Result<Response> {
             return Err(anyhow!("Passcode mismatch"));
         }
 
-        match create_short_id(req) {
-            Ok(resp) => return Ok(resp),
-            Err(e) => return Err(anyhow!("No passcode found in secret store: {e}")),
-        }
+        return match create_short_id(req) {
+            Ok(resp) => Ok(resp),
+            Err(e) => Err(anyhow!("No passcode found in secret store: {e}")),
+        };
     }
 
     // when no Auth header - treat it as a short URL:
@@ -148,9 +129,9 @@ fn handle_options() -> Response {
 }
 
 #[fastly::main]
-fn main(mut req: Request) -> Result<Response> {
+fn main(req: Request) -> Result<Response> {
     match *req.get_method() {
-        Method::GET => handle_get(&mut req),
+        Method::GET => handle_get(&req),
         Method::OPTIONS => Ok(handle_options()),
         _ => Ok(Response::from_status(StatusCode::METHOD_NOT_ALLOWED)
             .with_header(header::ALLOW, "GET, POST, OPTIONS")
