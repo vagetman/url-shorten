@@ -4,6 +4,7 @@ use fastly::secret_store::Secret;
 use fastly::{ObjectStore, Request, Response, SecretStore};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
+use serde_json::json;
 
 const SECRET_STORE_RES: &str = "secret-auth-store";
 const OBJ_STORE_RES: &str = "short-urls-store";
@@ -54,7 +55,8 @@ fn create_short_id(req: &Request) -> Result<Response> {
         return Err(anyhow!("No response host found in a header"));
     };
     let our_domain = req.get_header_str("host").unwrap();
-    let short_url = format!(r#"{{"short": "https://{our_domain}/{short_id}"}}"#);
+    let short_url = format!("https://{our_domain}/{short_id}");
+    let short_url_json = json!({"short": short_url});
     let redir_url = format!("https://{redir_domain}{}", req.get_path());
 
     let mut object_store =
@@ -65,7 +67,7 @@ fn create_short_id(req: &Request) -> Result<Response> {
     object_store.insert(&short_id, &*redir_url)?;
     Ok(Response::from_status(StatusCode::CREATED)
         .with_header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-        .with_body_text_plain(&short_url))
+        .with_body_text_plain(&serde_json::to_string_pretty(&short_url_json).unwrap()))
 }
 
 fn get_secret(name: &str) -> Result<Secret> {

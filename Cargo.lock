@@ -447,7 +447,7 @@ dependencies = [
  "bytes",
  "fastly",
  "rand",
- "serde",
+ "serde_json",
 ]
 
 [[package]]

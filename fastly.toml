@@ -1,6 +1,9 @@
+# This file describes a Fastly Compute package. To learn more visit:
+# https://developer.fastly.com/reference/fastly-toml/
+
 authors = ["<oss@fastly.com>", "vadim@fastly.com"]
 description = "Fastly short URL generator"
 language = "rust"
 manifest_version = 2
-name = "short_url"
+name = "url_shorten"
 service_id = ""
