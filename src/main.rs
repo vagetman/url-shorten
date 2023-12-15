@@ -50,21 +50,27 @@ fn get_redirect_url(req: &Request) -> Result<Response> {
 
 /// Create short ID of a URL
 fn create_short_id(req: &Request) -> Result<Response> {
+    // Generate a new short ID
     let short_id = generate_short_id();
+    // The `RESPONSE_HOST` header should be present
     let Some(redir_domain) = req.get_header_str(RESPONSE_HOST) else {
         return Err(anyhow!("No response host found in a header"));
     };
+    // Create a JSON of the shorten URL using our domain and the short ID
     let our_domain = req.get_header_str("host").unwrap();
     let short_url = format!("https://{our_domain}/{short_id}");
     let short_url_json = json!({"short": short_url});
-    let redir_url = format!("https://{redir_domain}{}", req.get_path());
+    // create a mutable URL object, as it was received
+    let mut redir_url = req.get_url().clone();
+    // update the domain with the domain we received in a header
+    redir_url.set_host(Some(redir_domain))?;
 
     let mut object_store =
         ObjectStore::open(OBJ_STORE_RES)?.ok_or_else(|| anyhow!("object store not exists"))?;
 
     println!("Redir URL to store: {redir_url}");
 
-    object_store.insert(&short_id, &*redir_url)?;
+    object_store.insert(&short_id, redir_url.as_str())?;
     Ok(Response::from_status(StatusCode::CREATED)
         .with_header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .with_body_text_plain(&serde_json::to_string_pretty(&short_url_json).unwrap()))
