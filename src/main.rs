@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use chrono::prelude::*;
 use fastly::http::{header, Method, StatusCode};
 use fastly::secret_store::Secret;
 use fastly::{ObjectStore, Request, Response, SecretStore};
@@ -36,20 +37,27 @@ fn get_redirect_url(req: &Request) -> Result<Response> {
         return Err(anyhow!("mal-formatted short id"));
     };
 
+    // open object store
     let object_store =
         ObjectStore::open(OBJ_STORE_RES)?.ok_or_else(|| anyhow!("object store not exists"))?;
 
-    let redirect_location = object_store
+    // lookup redir entry
+    let redir_entry = object_store
         .lookup_str(short_id)?
         .ok_or_else(|| anyhow!("redirect location not found"))?;
 
+    // separate EPOCH timestamp from the URL
+    let (_epoch, redir_location) = redir_entry
+        .split_once(' ')
+        .ok_or_else(|| anyhow!("redirect entry is mal-formed"))?;
+
     Ok(Response::from_status(StatusCode::MOVED_PERMANENTLY)
-        .with_header(header::LOCATION, redirect_location)
+        .with_header(header::LOCATION, redir_location)
         .with_header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
 }
 
 /// Create short ID of a URL
-fn create_short_id(req: &Request) -> Result<Response> {
+fn create_short_url(req: &Request) -> Result<Response> {
     // Generate a new short ID
     let short_id = generate_short_id();
     // The `RESPONSE_HOST` header should be present
@@ -60,17 +68,22 @@ fn create_short_id(req: &Request) -> Result<Response> {
     let our_domain = req.get_header_str("host").unwrap();
     let short_url = format!("https://{our_domain}/{short_id}");
     let short_url_json = json!({"short": short_url});
-    // create a mutable URL object, as it was received
+
+    // create a mutable URL object, from received URL
     let mut redir_url = req.get_url().clone();
     // update the domain with the domain we received in a header
     redir_url.set_host(Some(redir_domain))?;
 
+    // open KV store
     let mut object_store =
         ObjectStore::open(OBJ_STORE_RES)?.ok_or_else(|| anyhow!("object store not exists"))?;
 
-    println!("Redir URL to store: {redir_url}");
+    // create a redirect entry from EPOCH timestamp and the `redir_url`
+    let redir_entry = format!("{} {}", Utc::now().format("%s"), redir_url.as_str());
 
-    object_store.insert(&short_id, redir_url.as_str())?;
+    println!("Redir URL to store: {redir_entry}");
+
+    object_store.insert(&short_id, redir_entry)?;
     Ok(Response::from_status(StatusCode::CREATED)
         .with_header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .with_body_text_plain(&serde_json::to_string_pretty(&short_url_json).unwrap()))
@@ -102,7 +115,7 @@ fn handle_get(req: &Request) -> Result<Response> {
             return Err(anyhow!("Passcode mismatch"));
         }
 
-        return match create_short_id(req) {
+        return match create_short_url(req) {
             Ok(resp) => Ok(resp),
             Err(e) => Err(anyhow!("No passcode found in secret store: {e}")),
         };
