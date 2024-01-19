@@ -7,3 +7,25 @@ language = "rust"
 manifest_version = 2
 name = "url_shorten"
 service_id = ""
+
+[local_server]
+
+  [local_server.backends]
+
+  [local_server.kv_stores]
+
+    [[local_server.kv_stores.short-urls-store]]
+      data = "http://127.0.0.1:7676/abc123"
+      key = "c2TSRirboI"
+
+  [local_server.secret_stores]
+
+    [[local_server.secret_stores.secret-auth-store]]
+      data = "F1B7D119CE3B5CB1084509B79F2B9FBA"
+      key = "SolutionTek"
+
+  [local_server.config_stores]
+    [local_server.config_stores.auth-vendors-map]
+    format = "inline-toml"
+      [local_server.config_stores.auth-vendors-map.contents]
+        "SolutionTek" = "ST"

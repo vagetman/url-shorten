@@ -2,14 +2,15 @@ use anyhow::{anyhow, Result};
 use chrono::prelude::*;
 use fastly::http::{header, Method, StatusCode};
 use fastly::secret_store::Secret;
-use fastly::{ObjectStore, Request, Response, SecretStore};
+use fastly::{ConfigStore, ObjectStore, Request, Response, SecretStore};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use serde_json::json;
 
 const SECRET_STORE_RES: &str = "secret-auth-store";
-const OBJ_STORE_RES: &str = "short-urls-store";
-const SHORT_ID_LEN: usize = 10;
+const KV_STORE_RES: &str = "short-urls-store";
+const CONF_STORE_RES: &str = "auth-vendors-map";
+const SHORT_ID_LEN: usize = 15;
 const URLSHORT_AUTH: &str = "X-URLShort-Auth";
 const RESPONSE_HOST: &str = "X-Response-Host";
 
@@ -39,7 +40,7 @@ fn get_redirect_url(req: &Request) -> Result<Response> {
 
     // open object store
     let object_store =
-        ObjectStore::open(OBJ_STORE_RES)?.ok_or_else(|| anyhow!("object store not exists"))?;
+        ObjectStore::open(KV_STORE_RES)?.ok_or_else(|| anyhow!("object store not exists"))?;
 
     // lookup redir entry
     let redir_entry = object_store
@@ -57,9 +58,16 @@ fn get_redirect_url(req: &Request) -> Result<Response> {
 }
 
 /// Create short ID of a URL
-fn create_short_url(req: &Request) -> Result<Response> {
-    // Generate a new short ID
-    let short_id = generate_short_id();
+fn create_short_url(req: &Request, vendor_hdr: &str) -> Result<Response> {
+    // open config store
+    let config_store = ConfigStore::try_open(CONF_STORE_RES)?;
+
+    let short_id = config_store
+        .get(vendor_hdr)
+        .map_or_else(generate_short_id, |vendor_prefix| {
+            format!("{vendor_prefix}{}", generate_short_id())
+        });
+
     // The `RESPONSE_HOST` header should be present
     let Some(redir_domain) = req.get_header_str(RESPONSE_HOST) else {
         return Err(anyhow!("No response host found in a header"));
@@ -76,7 +84,7 @@ fn create_short_url(req: &Request) -> Result<Response> {
 
     // open KV store
     let mut object_store =
-        ObjectStore::open(OBJ_STORE_RES)?.ok_or_else(|| anyhow!("object store not exists"))?;
+        ObjectStore::open(KV_STORE_RES)?.ok_or_else(|| anyhow!("object store not exists"))?;
 
     // create a redirect entry from EPOCH timestamp and the `redir_url`
     let redir_entry = format!("{} {}", Utc::now().format("%s"), redir_url.as_str());
@@ -115,9 +123,9 @@ fn handle_get(req: &Request) -> Result<Response> {
             return Err(anyhow!("Passcode mismatch"));
         }
 
-        return match create_short_url(req) {
+        return match create_short_url(req, hdr_vendor) {
             Ok(resp) => Ok(resp),
-            Err(e) => Err(anyhow!("No passcode found in secret store: {e}")),
+            Err(e) => Err(anyhow!("URL shortening failed: {e}")),
         };
     }
 
@@ -128,14 +136,13 @@ fn handle_get(req: &Request) -> Result<Response> {
     // always respond with 200 OK to `/` request
     if req.get_path() == "/" {
         // this helps with service deployment
-        Ok(Response::from_status(StatusCode::OK))
-    } else {
-        match get_redirect_url(req) {
-            Ok(resp) => Ok(resp),
-            Err(e) => {
-                Ok(Response::from_status(StatusCode::NOT_FOUND)
-                    .with_body_text_plain(&e.to_string()))
-            }
+        return Ok(Response::from_status(StatusCode::OK));
+    }
+
+    match get_redirect_url(req) {
+        Ok(resp) => Ok(resp),
+        Err(e) => {
+            Ok(Response::from_status(StatusCode::NOT_FOUND).with_body_text_plain(&e.to_string()))
         }
     }
 }
