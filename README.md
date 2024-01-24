@@ -18,7 +18,8 @@ To deploy the service use the latest `fastly` tool [available on Fastly web site
 ## The API shortening request
 The API request for URL shortening takes the URI from the request and `X-Response-Host` header (see bellow). The API request should contain the following 2 headers. 
 * `X-URLShort-Auth` - Authentication header. It's a space separated `vendor password` sequence. The `password` should be stored in secret store (see above) with `vendor` being a key to the secret value.
-* `X-Response-Host` - the destination host for  URI.
+* `X-Response-Host` - the destination host for URI.
+
 The protocol is always `https`. When the API request succeeds `201 Created` response is returned.
 ## The URL expansion
 When no headers is supplied the URI path is assumed a shorten key with a request to expansion. A KV store lookup is performed and an original URL. When found `301` response is returned with `location` header containing the original URL. Otherwise `404` is returned. 
