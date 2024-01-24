@@ -25,7 +25,7 @@ service_id = ""
       key = "SolutionTek"
 
   [local_server.config_stores]
-    [local_server.config_stores.auth-vendors-map]
+    [local_server.config_stores.auth_vendors_map]
     format = "inline-toml"
-      [local_server.config_stores.auth-vendors-map.contents]
+      [local_server.config_stores.auth_vendors_map.contents]
         "SolutionTek" = "ST"

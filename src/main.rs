@@ -2,14 +2,14 @@ use anyhow::{anyhow, Result};
 use chrono::prelude::*;
 use fastly::http::{header, Method, StatusCode};
 use fastly::secret_store::Secret;
-use fastly::{ConfigStore, ObjectStore, Request, Response, SecretStore};
+use fastly::{ConfigStore, KVStore, Request, Response, SecretStore};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use serde_json::json;
 
 const SECRET_STORE_RES: &str = "secret-auth-store";
 const KV_STORE_RES: &str = "short-urls-store";
-const CONF_STORE_RES: &str = "auth-vendors-map";
+const CONF_STORE_RES: &str = "auth_vendors_map";
 const SHORT_ID_LEN: usize = 15;
 const URLSHORT_AUTH: &str = "X-URLShort-Auth";
 const RESPONSE_HOST: &str = "X-Response-Host";
@@ -38,12 +38,12 @@ fn get_redirect_url(req: &Request) -> Result<Response> {
         return Err(anyhow!("mal-formatted short id"));
     };
 
-    // open object store
-    let object_store =
-        ObjectStore::open(KV_STORE_RES)?.ok_or_else(|| anyhow!("object store not exists"))?;
+    // open kv store
+    let kv_store =
+        KVStore::open(KV_STORE_RES)?.ok_or_else(|| anyhow!("kv store not exists"))?;
 
     // lookup redir entry
-    let redir_entry = object_store
+    let redir_entry = kv_store
         .lookup_str(short_id)?
         .ok_or_else(|| anyhow!("redirect location not found"))?;
 
@@ -61,6 +61,7 @@ fn get_redirect_url(req: &Request) -> Result<Response> {
 fn create_short_url(req: &Request, vendor_hdr: &str) -> Result<Response> {
     // open config store
     let config_store = ConfigStore::try_open(CONF_STORE_RES)?;
+    // let config_store = ConfigStore::open(CONF_STORE_RES);
 
     let short_id = config_store
         .get(vendor_hdr)
@@ -83,15 +84,15 @@ fn create_short_url(req: &Request, vendor_hdr: &str) -> Result<Response> {
     redir_url.set_host(Some(redir_domain))?;
 
     // open KV store
-    let mut object_store =
-        ObjectStore::open(KV_STORE_RES)?.ok_or_else(|| anyhow!("object store not exists"))?;
+    let mut kv_store =
+        KVStore::open(KV_STORE_RES)?.ok_or_else(|| anyhow!("KV store not exists"))?;
 
     // create a redirect entry from EPOCH timestamp and the `redir_url`
     let redir_entry = format!("{} {}", Utc::now().format("%s"), redir_url.as_str());
 
     println!("Redir URL to store: {redir_entry}");
 
-    object_store.insert(&short_id, redir_entry)?;
+    kv_store.insert(&short_id, redir_entry)?;
     Ok(Response::from_status(StatusCode::CREATED)
         .with_header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .with_body_text_plain(&serde_json::to_string_pretty(&short_url_json).unwrap()))
@@ -166,3 +167,4 @@ fn main(req: Request) -> Result<Response> {
             .with_body_text_plain("This method is not allowed\n")),
     }
 }
+
