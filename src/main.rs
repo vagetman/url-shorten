@@ -39,8 +39,7 @@ fn get_redirect_url(req: &Request) -> Result<Response> {
     };
 
     // open kv store
-    let kv_store =
-        KVStore::open(KV_STORE_RES)?.ok_or_else(|| anyhow!("kv store not exists"))?;
+    let kv_store = KVStore::open(KV_STORE_RES)?.ok_or_else(|| anyhow!("kv store not exists"))?;
 
     // lookup redir entry
     let redir_entry = kv_store
@@ -88,7 +87,11 @@ fn create_short_url(req: &Request, vendor_hdr: &str) -> Result<Response> {
         KVStore::open(KV_STORE_RES)?.ok_or_else(|| anyhow!("KV store not exists"))?;
 
     // create a redirect entry from EPOCH timestamp and the `redir_url`
-    let redir_entry = format!("{} {}", Utc::now().format("%s"), redir_url.as_str());
+    let redir_entry = format!(
+        "{} {}",
+        Utc::now().format("%s"),
+        redir_url.as_str().replace("%23", "#")
+    );
 
     println!("Redir URL to store: {redir_entry}");
 
@@ -167,4 +170,3 @@ fn main(req: Request) -> Result<Response> {
             .with_body_text_plain("This method is not allowed\n")),
     }
 }
-

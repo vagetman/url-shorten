@@ -20,6 +20,9 @@ The API request for URL shortening takes the URI from the request and `X-Respons
 * `X-URLShort-Auth` - Authentication header. It's a space separated `vendor password` sequence. The `password` should be stored in secret store (see above) with `vendor` being a key to the secret value.
 * `X-Response-Host` - the destination host for URI.
 
+To encode URLs with a 'fragment' (`#<tag>`) the whole URL needs to be sent. User agents generally are not transmitting anything beyond `#` as the fragment is intended to be used locally only. Even if transmitted, it's not received and parsed correctly on Fastly platform. To transmit and receive the URL in its entirety the `#` should be sent in its URL-encoded form (`%23`). The code is making a reverse translation of `%23` back to `#`. 
+
 The protocol is always `https`. When the API request succeeds `201 Created` response is returned.
+
 ## The URL expansion
 When no headers is supplied the URI path is assumed a shorten key with a request to expansion. A KV store lookup is performed and an original URL. When found `301` response is returned with `location` header containing the original URL. Otherwise `404` is returned. 
