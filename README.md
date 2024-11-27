@@ -1,28 +1,92 @@
-# URL Shortening tool
-The tool provides the following functionality for URL shortenin
-* an secured API to create short URL
-* it resolves shortened URL into its original destination
+# URL Shortening Tool
 
-# Installation
-Fastly kv strore, config store and secret store are required to be created and linked to the service where the app is published on Fastly Compute platform. 
-The following constants should be updated with the name of stores linked to the service, if the names are different
+This tool provides a simple and secure solution for URL shortening on Fastly Compute, offering users faster responses compared to central cloud services or on-premise solutions. The tool includes the following features::
+
+- **Short URL Creation**: A secure API to generate shortened URLs.
+- **URL Resolution**: Resolves shortened URLs back to their original destinations.
+- **URL Deletion**: Removes the shortened URLs from KV store.
+
+---
+
+## Installation
+
+The service requires the following Fastly components to be created and linked to the app deployed on the Fastly Compute platform:
+
+1. **KV Store**: Used for storing shortened URLs.
+2. **Config Store**: Holds configuration details.
+3. **Secret Store**: Used for securely storing authentication credentials.
+
+Update the following constants in the code with the names of the linked stores, if they differ from the defaults:
 
 ```rust
 const SECRET_STORE_RES: &str = "secret-auth-store";
 const KV_STORE_RES: &str = "short-urls-store";
 const CONF_STORE_RES: &str = "auth_vendors_map";
 ```
-To deploy the service use the latest `fastly` tool [available on Fastly web site](https://developer.fastly.com/learning/tools/cli/).
 
-# Usage
-## The API shortening request
-The API request for URL shortening takes the URI from the request and `X-Response-Host` header (see bellow). The API request should contain the following 2 headers. 
-* `X-URLShort-Auth` - Authentication header. It's a space separated `vendor password` sequence. The `password` should be stored in secret store (see above) with `vendor` being a key to the secret value.
-* `X-Response-Host` - the destination host for URI.
+### Deployment
 
-To encode URLs with a 'fragment' (`#<tag>`) the whole URL needs to be sent. User agents generally are not transmitting anything beyond `#` as the fragment is intended to be used locally only. Even if transmitted, it's not received and parsed correctly on Fastly platform. To transmit and receive the URL in its entirety the `#` should be sent in its URL-encoded form (`%23`). The code is making a reverse translation of `%23` back to `#`. 
+To deploy the service, use the latest version of the Fastly CLI tool, available for download on the [Fastly Developer Website](https://developer.fastly.com/learning/tools/cli/).
 
-The protocol is always `https`. When the API request succeeds `201 Created` response is returned.
+## Usage
 
-## The URL expansion
-When no headers is supplied the URI path is assumed a shorten key with a request to expansion. A KV store lookup is performed and an original URL. When found `301` response is returned with `location` header containing the original URL. Otherwise `404` is returned. 
+### 1. **URL Shortening API Request**
+
+To shorten a URL, the API request must include:
+
+- The **URI** to be shortened (in the request body or path).
+- The `X-Response-Host` header specifying the destination host for the shortened URL.
+
+#### Required Headers:
+
+- `X-URLShort-Auth`: An authentication header with a `vendor password` sequence, separated by a space. The `password` is stored in the Secret Store, with the `vendor` being the key to the secret value.
+- `X-Response-Host`: The destination host for the shortened URL.
+
+#### Response:
+
+- If authentication is successful and the key is created, a `201 Created` response is returned. A JSON object with shortened URL is returned, eg
+
+```
+{
+  "short": "https://example.com/STpll0DfpzQMZBInA"
+}
+```
+
+#### Special Note on URL Fragments (`#`):
+
+User agents typically do not transmit fragments (`#<tag>`) in URLs. To include fragments, encode `#` as `%23` in the request. The tool will automatically decode `%23` back to `#` during processing.
+
+---
+
+### 2. **URL Expansion**
+
+To expand a shortened URL:
+
+- Send a request without headers.
+- The path in the URI is treated as the shortened key.
+
+The service performs a lookup in the KV Store:
+
+- If found, a `301 Moved Permanently` response is returned with the `Location` header pointing to the original URL.
+- If not found, a `404 Not Found` response is returned.
+
+---
+
+### 3. **Redirect Deletion API**
+
+To delete a shortened URL key from the KV Store, send a `DELETE` request with the following:
+
+#### Required Header:
+
+- `X-URLShort-Auth`: The same authentication header used for URL shortening.
+
+#### Response:
+
+- If the key is not found, a `404 Not Found` response is returned.
+- If authentication is successful and the key exists, a `202 Accepted` response is returned. A JSON object in the response body will indicate deleted key
+
+```
+{
+  "deleted": "https://example.com/STKot65UQdbESV9kE"
+}
+```

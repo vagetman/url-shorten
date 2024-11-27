@@ -8,18 +8,23 @@ manifest_version = 2
 name = "url_shorten"
 service_id = ""
 
-[local_server]
+[scripts]
+  build = "cargo build --bin url_shorten --release --target wasm32-wasi --color always"
 
   [local_server.backends]
 
   [local_server.kv_stores]
-
     [[local_server.kv_stores.short-urls-store]]
-      data = "http://127.0.0.1:7676/abc123"
-      key = "c2TSRirboI"
+      key = "STZmurkrcgBptG7mz"
+      data = "1732671102 http://127.0.0.1:7676/foobar"
+    [[local_server.kv_stores.short-urls-store]]
+      key = "STv1jotZvbekUufNj"
+      data = "1732671102 http://127.0.0.1:7676/abc123"
+    [[local_server.kv_stores.short-urls-store]]
+      key = "SThTyfEo5uvCbxtZ3"
+      data = "1732671102 http://127.0.0.1:7676/efg123"
 
   [local_server.secret_stores]
-
     [[local_server.secret_stores.secret-auth-store]]
       data = "F1B7D119CE3B5CB1084509B79F2B9FBA"
       key = "SolutionTek"
