@@ -82,8 +82,10 @@ To delete a shortened URL key from the KV Store, send a `DELETE` request with th
 
 #### Response:
 
+- If authentication is unsuccessful `401 Unauthorized` response is returned.
+- If the URL starts with anything other than a prefix defined for this vendor `403 Forbidden` response is retuned.
 - If the key is not found, a `404 Not Found` response is returned.
-- If authentication is successful and the key exists, a `202 Accepted` response is returned. A JSON object in the response body will indicate deleted key
+- If authentication is successful and the key exists, a `202 Accepted` response is returned. A JSON object in the response body will indicate deleted key.
 
 ```
 {

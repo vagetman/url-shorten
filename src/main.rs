@@ -3,8 +3,8 @@ use chrono::prelude::*;
 use fastly::http::{header, Method, StatusCode};
 use fastly::secret_store::Secret;
 use fastly::{ConfigStore, KVStore, Request, Response, SecretStore};
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
+use rand::distr::Alphanumeric;
+use rand::{rng, Rng};
 use serde_json::json;
 
 const SECRET_STORE_RES: &str = "secret-auth-store";
@@ -16,15 +16,14 @@ const RESPONSE_HOST: &str = "X-Response-Host";
 
 /// Generate a random short ID
 fn generate_short_id() -> String {
-    let mut rng = thread_rng();
+    let mut rng = rng();
     (0..SHORT_ID_LEN)
         .map(|_| rng.sample(Alphanumeric) as char)
         .collect()
 }
 
-/// Get redirect URL from short ID
-fn get_redirect_url(req: &Request) -> Result<Response> {
-    // remove leading "/" in the path
+// Extract short ID from the URL
+fn extract_short_id(req: &Request) -> Result<&str> {
     let short_id = req
         .get_path()
         .get(1..)
@@ -38,6 +37,12 @@ fn get_redirect_url(req: &Request) -> Result<Response> {
         return Err(anyhow!("mal-formatted short id"));
     };
 
+    Ok(short_id)
+}
+
+/// Get redirect URL from short ID
+fn get_redirect_url(req: &Request) -> Result<Response> {
+    let short_id = extract_short_id(req)?;
     // open kv store
     let kv_store =
         KVStore::open(KV_STORE_RES)?.ok_or_else(|| anyhow!("kv store does not exist"))?;
@@ -59,16 +64,24 @@ fn get_redirect_url(req: &Request) -> Result<Response> {
         .with_header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
 }
 
-// Create short ID of a URL
-fn create_short_url(req: &Request, vendor_hdr: &str) -> Result<Response> {
+// Get vendor prefix from the config store
+fn get_vendor_prefix(vendor_hdr: &str) -> Result<String> {
     // open config store
     let config_store = ConfigStore::try_open(CONF_STORE_RES)?;
 
-    let short_id = config_store
+    let vendor_prefix = config_store
         .get(vendor_hdr)
-        .map_or_else(generate_short_id, |vendor_prefix| {
-            format!("{vendor_prefix}{}", generate_short_id())
-        });
+        .ok_or_else(|| anyhow!("Vendor prefix needs to be setup in service config"))?;
+
+    Ok(vendor_prefix)
+}
+
+// Create short ID of a URL
+fn create_short_url(req: &Request, vendor_hdr: &str) -> Result<Response> {
+    // get vendor prefix from the config store
+    let vendor_prefix = get_vendor_prefix(vendor_hdr)?;
+    // generate a short ID with the vendor prefix
+    let short_id = format!("{vendor_prefix}{}", generate_short_id());
 
     // The `RESPONSE_HOST` header should be present
     let Some(redir_domain) = req.get_header_str(RESPONSE_HOST) else {
@@ -103,12 +116,7 @@ fn create_short_url(req: &Request, vendor_hdr: &str) -> Result<Response> {
 }
 
 // Delete short ID of a URL
-fn delete_short_url(req: &Request) -> Result<Response> {
-    let short_id = req
-        .get_path()
-        .get(1..)
-        .ok_or_else(|| anyhow!("mal-formatted URL"))?;
-
+fn delete_short_url(req: &Request, short_id: &str) -> Result<Response> {
     // open KV store
     let kv_store =
         KVStore::open(KV_STORE_RES)?.ok_or_else(|| anyhow!("KV store does not exist"))?;
@@ -165,12 +173,25 @@ fn authorized_vendor(req: &Request) -> Result<&str> {
 
 // handle DELETE
 fn handle_delete(req: &Request) -> Result<Response> {
-    if let Err(e) = authorized_vendor(req) {
-        return Ok(Response::from_status(StatusCode::UNAUTHORIZED)
-            .with_body_text_plain(&format!("Unauthorized request: {e}\n")));
+    let vendor_hdr = match authorized_vendor(req) {
+        Ok(hdr_vendor) => hdr_vendor,
+        Err(e) => {
+            println!("Unauthorized request: {e}");
+            return Ok(Response::from_status(StatusCode::UNAUTHORIZED)
+                .with_body_text_plain(&format!("Unauthorized request: {e}\n")));
+        }
     };
+    let vendor_prefix = get_vendor_prefix(vendor_hdr)?;
 
-    match delete_short_url(req) {
+    // extract short ID from the URL
+    let short_id = extract_short_id(req)?;
+
+    if !short_id.starts_with(&vendor_prefix) {
+        return Ok(Response::from_status(StatusCode::FORBIDDEN)
+            .with_body_text_plain(&format!("The short URL must start with {vendor_prefix}\n")));
+    }
+
+    match delete_short_url(req, short_id) {
         Ok(resp) => Ok(resp),
         Err(e) => Err(anyhow!("URL deletion failed: {e}")),
     }
@@ -254,10 +275,7 @@ mod tests {
         let req = Request::get("http://localhost/whatever/something")
             .with_header(HOST, "test.com")
             .with_header(RESPONSE_HOST, "example.com")
-            .with_header(
-                URLSHORT_AUTH,
-                "SolutionTek F1B7D119CE3B5CB1084509B79F2B9FBA",
-            );
+            .with_header(URLSHORT_AUTH, "vendor F1B7D119CE3B5CB1084509B79F2B9FBA");
         let response = create_short_url(&req, "vendor");
         assert!(response.is_ok());
         let response = response.unwrap();
@@ -267,9 +285,17 @@ mod tests {
     #[test]
     fn test_delete_short_url() {
         let req = Request::get("http://localhost/STv1jotZvbekUufNj").with_method(Method::DELETE);
-        let response = delete_short_url(&req);
+
+        let short_id = req
+            .get_path()
+            .get(1..)
+            .ok_or_else(|| anyhow!("mal-formatted URL"))
+            .unwrap();
+
+        let response = delete_short_url(&req, short_id);
         assert!(response.is_ok());
         let response = response.unwrap();
+        println!("{:?}", response);
         assert_eq!(response.get_status(), StatusCode::ACCEPTED);
     }
 
@@ -284,14 +310,23 @@ mod tests {
 
     #[test]
     fn test_handle_delete() {
-        let req = Request::new(Method::DELETE, "http://localhost/SThTyfEo5uvCbxtZ3").with_header(
-            URLSHORT_AUTH,
-            "SolutionTek F1B7D119CE3B5CB1084509B79F2B9FBA",
-        );
+        let req = Request::delete("http://localhost/SThTyfEo5uvCbxtZ3")
+            .with_header(URLSHORT_AUTH, "vendor F1B7D119CE3B5CB1084509B79F2B9FBA");
         let response = handle_delete(&req);
         assert!(response.is_ok());
         let response = response.unwrap();
         assert_eq!(response.get_status(), StatusCode::ACCEPTED);
+    }
+
+    #[test]
+    fn test_delete_wrong_prefix() {
+        let req = Request::delete("http://localhost/QTv1jotZvbekUufNj")
+            .with_header(URLSHORT_AUTH, "vendor F1B7D119CE3B5CB1084509B79F2B9FBA");
+
+        let response = handle_delete(&req);
+        assert!(response.is_ok());
+        let response = response.unwrap();
+        assert_eq!(response.get_status(), StatusCode::FORBIDDEN);
     }
 
     #[test]
