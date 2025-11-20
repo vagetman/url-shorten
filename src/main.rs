@@ -64,9 +64,8 @@ fn get_redirect_url(req: &Request) -> Result<Response> {
         .with_header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
 }
 
-// Get vendor prefix from the config store
+// Helper function to get vendor prefix from config store
 fn get_vendor_prefix(vendor_hdr: &str) -> Result<String> {
-    // open config store
     let config_store = ConfigStore::try_open(CONF_STORE_RES)?;
 
     let vendor_prefix = config_store
@@ -76,17 +75,23 @@ fn get_vendor_prefix(vendor_hdr: &str) -> Result<String> {
     Ok(vendor_prefix)
 }
 
+// Helper function to generate short ID with vendor prefix
+fn generate_short_id_with_prefix(vendor_hdr: &str) -> Result<String> {
+    let vendor_prefix = get_vendor_prefix(vendor_hdr)?;
+    let short_id = format!("{vendor_prefix}{}", generate_short_id());
+    Ok(short_id)
+}
+
 // Create short ID of a URL
 fn create_short_url(req: &Request, vendor_hdr: &str) -> Result<Response> {
-    // get vendor prefix from the config store
-    let vendor_prefix = get_vendor_prefix(vendor_hdr)?;
     // generate a short ID with the vendor prefix
-    let short_id = format!("{vendor_prefix}{}", generate_short_id());
+    let short_id = generate_short_id_with_prefix(vendor_hdr)?;
 
     // The `RESPONSE_HOST` header should be present
     let Some(redir_domain) = req.get_header_str(RESPONSE_HOST) else {
         return Err(anyhow!("No response host found in a header"));
     };
+
     // Create a JSON of the shorten URL using our domain and the short ID
     let our_domain = req.get_header_str("host").unwrap_or("localhost");
     let short_url = format!("https://{our_domain}/{short_id}");
