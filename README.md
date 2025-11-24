@@ -5,6 +5,7 @@ This tool provides a simple and secure solution for URL shortening on Fastly Com
 - **Short URL Creation**: A secure API to generate shortened URLs.
 - **URL Resolution**: Resolves shortened URLs back to their original destinations.
 - **URL Deletion**: Removes the shortened URLs from KV store.
+- **URL Purging**: Bulk deletion of expired URLs based on age thresholds.
 
 ---
 
@@ -52,9 +53,13 @@ To shorten a URL, the API request must include:
 }
 ```
 
-#### Special Note on URL Fragments (`#`):
+#### Special Notes:
 
+**URL Fragments (`#`):**  
 User agents typically do not transmit fragments (`#<tag>`) in URLs. To include fragments, encode `#` as `%23` in the request. The tool will automatically decode `%23` back to `#` during processing.
+
+**Collision Detection:**  
+The service generates random alphanumeric short IDs with a vendor-specific prefix. Before storing a new short URL, it verifies that the generated key doesn't already exist in the KV store. If a collision is detected (extremely rare), the service automatically retries with a new random ID, ensuring every shortened URL is unique.
 
 ---
 
@@ -87,8 +92,195 @@ To delete a shortened URL key from the KV Store, send a `DELETE` request with th
 - If the key is not found, a `404 Not Found` response is returned.
 - If authentication is successful and the key exists, a `202 Accepted` response is returned. A JSON object in the response body will indicate deleted key.
 
-```
+```json
 {
   "deleted": "https://example.com/STKot65UQdbESV9kE"
 }
 ```
+
+---
+
+### 3. **Redirect URL Purging API**
+
+To bulk delete expired shortened URLs from the KV Store, send a `PURGE` request with the following:
+
+#### Request Format:
+
+```
+PURGE /age/{unit}/{value}[?preview=true][&verbose=true]
+```
+
+- **Path Parameters**:
+
+  - `unit`: Time unit - `days`, `months`, or `years`
+  - `value`: Numeric value for the age threshold
+
+- **Query Parameters** (optional):
+  - `preview=true`: Preview mode - shows what would be deleted without actually deleting
+  - `verbose=true`: Include detailed list of URLs in the response
+
+#### Required Header:
+
+- `X-URLShort-Auth`: The same authentication header used for URL shortening.
+
+#### Response:
+
+- If authentication is unsuccessful, a `401 Unauthorized` response is returned.
+- If authentication is successful, a `200 OK` response is returned with a JSON object.
+
+#### Examples:
+
+**Example 1: Actual purge (delete URLs older than 30 days)**
+
+```bash
+curl -X PURGE "https://example.com/age/days/30" \
+  -H "X-URLShort-Auth: vendor SECRET"
+```
+
+Response:
+
+```json
+{
+  "status": "purge_completed",
+  "preview_mode": false,
+  "vendor_prefix": "ST",
+  "cutoff_days": 30,
+  "cutoff_timestamp": 1729814400,
+  "cutoff_date": "2024-10-25 00:00:00 UTC",
+  "checked": 150,
+  "would_delete": null,
+  "deleted": 2,
+  "skipped": 108,
+  "errors": []
+}
+```
+
+---
+
+**Example 2: Preview mode (see what would be deleted without deleting)**
+
+```bash
+curl -X PURGE "https://example.com/age/days/30?preview=true" \
+  -H "X-URLShort-Auth: vendor SECRET"
+```
+
+Response:
+
+```json
+{
+  "status": "preview_completed",
+  "preview_mode": true,
+  "vendor_prefix": "ST",
+  "cutoff_days": 30,
+  "cutoff_timestamp": 1729814400,
+  "cutoff_date": "2024-10-25 00:00:00 UTC",
+  "checked": 150,
+  "would_delete": 2,
+  "deleted": null,
+  "skipped": 108,
+  "errors": []
+}
+```
+
+---
+
+**Example 3: Preview with verbose (detailed list of URLs to be deleted)**
+
+```bash
+curl -X PURGE "https://example.com/age/months/6?preview=true&verbose=true" \
+  -H "X-URLShort-Auth: vendor SECRET"
+```
+
+Response:
+
+```json
+{
+  "status": "preview_completed",
+  "preview_mode": true,
+  "vendor_prefix": "ST",
+  "cutoff_days": 180,
+  "cutoff_timestamp": 1714000000,
+  "cutoff_date": "2024-04-25 00:00:00 UTC",
+  "checked": 150,
+  "would_delete": 2,
+  "deleted": null,
+  "skipped": 108,
+  "errors": [],
+  "items": [
+    {
+      "short_id": "STpll0DfpzQMZBInA",
+      "url": "https://example.com/original",
+      "created_at": 1720000000,
+      "created_date": "2024-07-03 12:26:40 UTC",
+      "age_days": 145
+    },
+    {
+      "short_id": "STabc123xyz456789",
+      "url": "https://example.com/another-url",
+      "created_at": 1715000000,
+      "created_date": "2024-05-06 12:13:20 UTC",
+      "age_days": 203
+    }
+  ]
+}
+```
+
+---
+
+**Example 4: Actual purge with verbose (detailed list of deleted URLs)**
+
+```bash
+curl -X PURGE "https://example.com/age/years/1?verbose=true" \
+  -H "X-URLShort-Auth: vendor SECRET"
+```
+
+Response:
+
+```json
+{
+  "status": "purge_completed",
+  "preview_mode": false,
+  "vendor_prefix": "ST",
+  "cutoff_days": 365,
+  "cutoff_timestamp": 1700000000,
+  "cutoff_date": "2023-11-15 00:00:00 UTC",
+  "checked": 500,
+  "would_delete": null,
+  "deleted": 2,
+  "skipped": 108,
+  "errors": [],
+  "items": [
+    {
+      "short_id": "STpll0DfpzQMZBInA",
+      "url": "https://example.com/original",
+      "created_at": 1720000000,
+      "created_date": "2024-07-03 12:26:40 UTC",
+      "age_days": 145
+    },
+    {
+      "short_id": "STabc123xyz456789",
+      "url": "https://example.com/another-url",
+      "created_at": 1715000000,
+      "created_date": "2024-05-06 12:13:20 UTC",
+      "age_days": 203
+    }
+  ]
+}
+```
+
+---
+
+#### Response Fields:
+
+- `status`: Operation status - `preview_completed` or `purge_completed`
+- `preview_mode`: Boolean indicating if this was a preview
+- `vendor_prefix`: The vendor prefix used for filtering URLs
+- `cutoff_days`: Age threshold in days
+- `cutoff_timestamp`: Unix timestamp for the cutoff date
+- `cutoff_date`: Human-readable cutoff date
+- `checked`: Total number of URLs examined
+- `would_delete`: Number of URLs that would be deleted (number in preview mode, `null` in actual mode)
+- `deleted`: Number of URLs that were deleted (number in actual mode, `null` in preview mode)
+- `skipped`: Number of URLs skipped (newer than threshold)
+- `errors`: Array of error messages, if any
+- `items`: Detailed list of URLs with their metadata (only present when `verbose=true`)
